@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="sw">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#07151b">
+<title>MSAKUZI ADMIN</title>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<style>
+:root{color-scheme:dark;--bg:#07151b;--panel:#10242b;--line:#24434b;--txt:#e9f5f5;--mut:#9db6bb;--green:#20c997;--red:#ef5350;--gold:#f4bd50}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:15px system-ui,Arial,sans-serif}
+.wrap{max-width:1000px;margin:auto;padding:18px}h1{font-size:25px;margin:5px 0}p{color:var(--mut);line-height:1.5}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:15px;padding:16px;margin:14px 0}
+input,button{font:inherit}input{width:100%;padding:13px;margin:7px 0 12px;border-radius:9px;border:1px solid var(--line);background:#07151b;color:var(--txt)}
+button{border:0;border-radius:9px;padding:11px 15px;font-weight:700;cursor:pointer}
+.primary{background:var(--green);color:#04251d}.secondary{background:#29434a;color:white}.danger{background:var(--red);color:white}
+button:disabled{opacity:.5;cursor:not-allowed}.hide{display:none!important}
+.top{display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}.stat{background:#071a20;border:1px solid var(--line);border-radius:12px;padding:13px}.stat b{display:block;font-size:25px}.muted{color:var(--mut);font-size:13px}
+.status{display:inline-block;padding:4px 9px;border-radius:20px;font-size:12px;font-weight:800;background:#57451c;color:#ffe09a}.approved{background:#123e32;color:#8cf0c4}.rejected{background:#512626;color:#ffaaaa}
+.item{border:1px solid var(--line);border-radius:12px;padding:14px;margin:10px 0;background:#0b1c22}
+.itemhead{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap}.details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin:12px 0;color:#c6d8da;font-size:14px;overflow-wrap:anywhere}
+.actions{display:flex;gap:8px}.actions button{flex:1}.message{margin-top:10px;min-height:20px;color:var(--gold);overflow-wrap:anywhere}
+.tabs{display:flex;gap:8px;flex-wrap:wrap}.tabs button.active{outline:2px solid var(--green)}
+@media(max-width:560px){.stats{grid-template-columns:1fr 1fr}.details{grid-template-columns:1fr}.wrap{padding:12px}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div><h1>MSAKUZI ADMIN</h1><p>Usimamizi wa malipo ya MSAKUZI PREDICTION</p></div>
+    <button id="logoutBtn" class="secondary hide">LOG OUT</button>
+  </header>
+
+  <section id="loginCard" class="card">
+    <h2>Admin Login</h2>
+    <p>Ingia kwa akaunti yako ya Supabase Auth. Usimpe mtu mwingine nenosiri lako.</p>
+    <label for="email">Admin email</label>
+    <input id="email" type="email" autocomplete="username" placeholder="Email ya Admin">
+    <label for="password">Password</label>
+    <input id="password" type="password" autocomplete="current-password" placeholder="Password">
+    <button id="loginBtn" class="primary" style="width:100%">INGIA</button>
+    <div id="loginMsg" class="message" role="status"></div>
+  </section>
+
+  <section id="dashboard" class="hide">
+    <div class="card">
+      <div class="top"><div><b>Dashboard ya malipo</b><div class="muted" id="who"></div></div><span class="status approved">ADMIN VERIFIED</span></div>
+      <div class="stats" style="margin-top:14px">
+        <div class="stat"><span class="muted">Pending</span><b id="pendingCount">0</b></div>
+        <div class="stat"><span class="muted">Approved</span><b id="approvedCount">0</b></div>
+        <div class="stat"><span class="muted">Rejected</span><b id="rejectedCount">0</b></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="top"><b>Ombi za malipo</b><button id="refreshBtn" class="secondary">REFRESH</button></div>
+      <div class="tabs" style="margin:12px 0">
+        <button class="secondary active" data-filter="pending">PENDING</button>
+        <button class="secondary" data-filter="all">ALL</button>
+        <button class="secondary" data-filter="approved">APPROVED</button>
+        <button class="secondary" data-filter="rejected">REJECTED</button>
+      </div>
+      <div id="listMsg" class="message" role="status">Inapakia malipo...</div>
+      <div id="paymentsList"></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const SUPABASE_URL = "https://zpxbflsvivjxkchnojeh.supabase.co";
+const SUPABASE_KEY = "sb_publishable_Ow5glyTelDjDTonCQX4aOg_gH0QGWvT";
+const ADMIN_UID = "fd07d32a-643c-417f-97c3-f9c4f0489e64";
+const sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+const $ = id => document.getElementById(id);
+let rows = [], filter = "pending", channel = null, busy = false;
+
+function safe(v){
+  return String(v ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function money(v){ return Number(v || 0).toLocaleString("en-US") + " TSh"; }
+function date(v){ if(!v) return "—"; const d=new Date(v); return isNaN(d)?"—":d.toLocaleString(); }
+function msg(id, text){ $(id).textContent = text || ""; }
+
+async function verifySession(){
+  const {data:{user},error} = await sb.auth.getUser();
+  if(error || !user){ showLogin(); return false; }
+  if(user.id !== ADMIN_UID){
+    await sb.auth.signOut();
+    showLogin();
+    msg("loginMsg","Akaunti hii si Admin aliyeidhinishwa.");
+    return false;
+  }
+  $("loginCard").classList.add("hide");
+  $("dashboard").classList.remove("hide");
+  $("logoutBtn").classList.remove("hide");
+  $("who").textContent = user.email || "Admin";
+  return true;
+}
+function showLogin(){
+  $("loginCard").classList.remove("hide");
+  $("dashboard").classList.add("hide");
+  $("logoutBtn").classList.add("hide");
+  if(channel){ sb.removeChannel(channel); channel=null; }
+}
+$("loginBtn").addEventListener("click", async()=>{
+  const email=$("email").value.trim(), password=$("password").value;
+  if(!email || !password){ msg("loginMsg","Weka email na password."); return; }
+  $("loginBtn").disabled=true; msg("loginMsg","Inaingia...");
+  try{
+    const {error}=await sb.auth.signInWithPassword({email,password});
+    if(error) throw error;
+    const ok=await verifySession();
+    if(ok){ $("password").value=""; await loadPayments(); subscribeRealtime(); }
+  }catch(e){ msg("loginMsg","Imeshindikana kuingia: "+(e.message||e)); }
+  $("loginBtn").disabled=false;
+});
+$("logoutBtn").addEventListener("click",async()=>{if(channel){await sb.removeChannel(channel);channel=null;}await sb.auth.signOut();showLogin();});
+$("refreshBtn").addEventListener("click",loadPayments);
+
+async function loadPayments(){
+  msg("listMsg","Inapakia...");
+  try{
+    const {data,error}=await sb.rpc("admin_list_payments");
+    if(error) throw error;
+    rows=Array.isArray(data)?data:[];
+    updateStats(); renderList(); msg("listMsg",rows.length?"":"Bado hakuna maombi ya malipo.");
+  }catch(e){ msg("listMsg","Hitilafu ya kupakia: "+(e.message||e)); }
+}
+function updateStats(){
+  $("pendingCount").textContent=rows.filter(x=>String(x.status).toLowerCase()==="pending").length;
+  $("approvedCount").textContent=rows.filter(x=>String(x.status).toLowerCase()==="approved").length;
+  $("rejectedCount").textContent=rows.filter(x=>String(x.status).toLowerCase()==="rejected").length;
+}
+function renderList(){
+  const list=$("paymentsList"); list.innerHTML="";
+  const visible=rows.filter(x=>filter==="all" || String(x.status||"pending").toLowerCase()===filter);
+  if(!visible.length){list.innerHTML='<p class="muted">Hakuna malipo kwenye kundi hili.</p>';return;}
+  visible.forEach(r=>{
+    const status=String(r.status||"pending").toLowerCase();
+    const div=document.createElement("article"); div.className="item";
+    const label=r.plan_code || r.plan || "—";
+    div.innerHTML=`
+      <div class="itemhead"><b>${safe(r.payer_name||"Jina halipo")}</b><span class="status ${safe(status)}">${safe(status.toUpperCase())}</span></div>
+      <div class="details">
+        <div><span class="muted">Kifurushi</span><br><b>${safe(label)}</b></div>
+        <div><span class="muted">Kiasi</span><br><b>${safe(money(r.amount))}</b></div>
+        <div><span class="muted">Tarehe ya ombi</span><br>${safe(date(r.created_at))}</div>
+        <div><span class="muted">Token</span><br>${safe(r.token||"—")}</div>
+      </div>
+      ${status==="pending"?`<div class="actions"><button type="button" class="primary" data-action="approved" data-token="${safe(r.token)}">CONFIRM</button><button type="button" class="danger" data-action="rejected" data-token="${safe(r.token)}">REJECT</button></div>`:""}
+    `;
+    list.appendChild(div);
+    div.querySelectorAll("button[data-action]").forEach(btn=>{
+      btn.addEventListener("click",()=>handleDecision(btn));
+    });
+  });
+}
+async function handleDecision(btn){
+  if(busy) return;
+  const token=btn.dataset.token, status=btn.dataset.action;
+  if(!token){
+    msg("listMsg","Token ya ombi hili haipo. Bonyeza REFRESH.");
+    return;
+  }
+  const promptText=status==="approved"?"Unathibitisha kuwa umepokea malipo haya kweli?":"Unakataa ombi hili la malipo?";
+  if(!window.confirm(promptText)) return;
+  busy=true;
+  document.querySelectorAll("button[data-action]").forEach(b=>b.disabled=true);
+  msg("listMsg","Inatuma uamuzi kwa Supabase...");
+  try{
+    const {data,error}=await sb.rpc("admin_set_payment_status",{p_token:token,p_status:status});
+    if(error) throw error;
+    if(data && data.success===false) throw new Error(data.message||"Supabase haikukubali mabadiliko.");
+    await loadPayments();
+    msg("listMsg",status==="approved"?"Malipo yamethibitishwa. Mteja anaweza kufungua prediction.":"Ombi limekataliwa.");
+  }catch(e){
+    msg("listMsg","Imeshindikana: "+(e.message||String(e)));
+    document.querySelectorAll("button[data-action]").forEach(b=>b.disabled=false);
+  }finally{
+    busy=false;
+  }
+}
+document.querySelectorAll("[data-filter]").forEach(b=>b.addEventListener("click",()=>{
+  filter=b.dataset.filter;
+  document.querySelectorAll("[data-filter]").forEach(x=>x.classList.toggle("active",x===b));
+  renderList();
+}));
+function subscribeRealtime(){
+  if(channel) sb.removeChannel(channel);
+  channel=sb.channel("msakuzi-admin-payments")
+    .on("postgres_changes",{event:"*",schema:"public",table:"payments"},()=>loadPayments())
+    .subscribe((status)=>{if(status==="CHANNEL_ERROR")msg("listMsg","Realtime haijaunganishwa. Tumia REFRESH kuangalia malipo mapya.");});
+}
+(async()=>{
+  const ok=await verifySession();
+  if(ok){await loadPayments();subscribeRealtime();}
+})();
+</script>
+</body>
+</html>
